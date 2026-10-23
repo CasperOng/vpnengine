@@ -273,10 +273,22 @@ final class SessionTests: XCTestCase {
         try await session.start()
         defer { Task { await session.stop() } }
 
-        let failed = await waitUntil(timeout: 5) { session.statistics.state.failureReason != nil }
-        XCTAssertTrue(failed, "the session never failed: \(session.statistics.state)")
-        XCTAssertTrue(session.statistics.state.failureReason?.contains("handshake") ?? false,
-                      "the reason should mention the handshake: \(String(describing: session.statistics.state.failureReason))")
+        // Capture the reason *inside* the poll. Reading `statistics.state` twice used
+        // to race the retry loop: the state can leave `.failed` between the two reads,
+        // which made this test flaky on a slow runner even though the behaviour was
+        // correct. One read, one assertion.
+        var capturedReason: String?
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if let reason = session.statistics.state.failureReason {
+                capturedReason = reason
+                break
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertNotNil(capturedReason, "the session never failed")
+        XCTAssertTrue(capturedReason?.contains("handshake") ?? false,
+                      "the reason should mention the handshake: \(String(describing: capturedReason))")
         XCTAssertFalse(session.statistics.state.isEstablished)
 
         // Traffic offered afterwards must not crash anything.
